@@ -1,0 +1,1206 @@
+     1                                  ; ============================================================
+     2                                  ; COAL Project - CATCH & SCORE   (Phase I)
+     3                                  
+     4                                  ; Theme   : Coins / Apples / Stars  -> Basket -> Bombs / Crosses
+     5                                  ; Phase I : start screen, game screen (3x3 objects, timer,
+     6                                  ;           live score) and end screen.
+     7                                  ;
+     8                                  
+     9                                  [org 0x0100]
+    10 00000000 E9A805                   jmp start
+    11                                  
+    12                                  ; ------------------------------------------------------------
+    13                                  ; Variables
+    14                                  ; ------------------------------------------------------------
+    15 00000003 0000                    score:      dw 0            ; live score (0..9999)
+    16 00000005 1E00                    timeleft:   dw 30           ; remaining game time in seconds
+    17 00000007 0A00                    tickdelay:  dw 10           ; outer delay count for ~1 second
+    18                                                              ; (tune: bigger = slower clock)
+    19                                  
+    20                                  ; ------------------------------------------------------------
+    21                                  ; 3x3 sprites: 9 words each. High byte = attribute, low byte =
+    22                                  ; ASCII / CP437 code.  0x0000 = transparent.
+    23                                  ; ------------------------------------------------------------
+    24 00000009 0000DC0E0000            coin:   dw 0x0000, 0x0EDC, 0x0000      ;   ▄
+    25 0000000F DE0E240EDD0E                    dw 0x0EDE, 0x0E24, 0x0EDD      ;  ▐$▌
+    26 00000015 0000DF0E0000                    dw 0x0000, 0x0EDF, 0x0000      ;   ▀
+    27                                  
+    28 0000001B 00002F0A0000            apple:  dw 0x0000, 0x0A2F, 0x0000      ;   /   (green leaf)
+    29 00000021 DE0CDB0CDD0C                    dw 0x0CDE, 0x0CDB, 0x0CDD      ;  ▐█▌  (red body)
+    30 00000027 0000DF0C0000                    dw 0x0000, 0x0CDF, 0x0000      ;   ▀
+    31                                  
+    32 0000002D 00007C0B0000            star:   dw 0x0000, 0x0B7C, 0x0000      ;   |
+    33 00000033 2D0B2A0F2D0B                    dw 0x0B2D, 0x0F2A, 0x0B2D      ;  -*-
+    34 00000039 00007C0B0000                    dw 0x0000, 0x0B7C, 0x0000      ;   |
+    35                                  
+    36 0000003F 00002A0C0000            bomb:   dw 0x0000, 0x0C2A, 0x0000      ;   *   (red spark)
+    37 00000045 DB07DB07DB07                    dw 0x07DB, 0x07DB, 0x07DB      ;  ███  (grey body)
+    38 0000004B 0000DF070000                    dw 0x0000, 0x07DF, 0x0000      ;   ▀
+    39                                  
+    40 00000051 5C0C00002F0C            cross:  dw 0x0C5C, 0x0000, 0x0C2F      ;  \ /
+    41 00000057 0000580C0000                    dw 0x0000, 0x0C58, 0x0000      ;   X
+    42 0000005D 2F0C00005C0C                    dw 0x0C2F, 0x0000, 0x0C5C      ;  / 
+    43 00000063 5C0F00002F0F            basket: dw 0x0F5C, 0x0000, 0x0F2F      ;  \ /
+    44 00000069 DB06DB06DB06                    dw 0x06DB, 0x06DB, 0x06DB      ;  ███  (brown)
+    45 0000006F 0000DF060000                    dw 0x0000, 0x06DF, 0x0000      ;   ▀
+    46                                  
+    47                                  ; ------------------------------------------------------------
+    48                                  ; Big title font: 5x5 pixels per letter, 5 bytes per letter
+    49                                  ; (one byte per pixel row, bits 4..0 = pixels left to right).
+    50                                  ; Letter numbers: 0=C 1=A 2=T 3=H 4=S 5=O 6=R 7=E
+    51                                  ; ------------------------------------------------------------
+    52 00000075 0F1010100F              font:   db 0x0F, 0x10, 0x10, 0x10, 0x0F    ; 0 = C
+    53 0000007A 0E111F1111                      db 0x0E, 0x11, 0x1F, 0x11, 0x11    ; 1 = A
+    54 0000007F 1F04040404                      db 0x1F, 0x04, 0x04, 0x04, 0x04    ; 2 = T
+    55 00000084 11111F1111                      db 0x11, 0x11, 0x1F, 0x11, 0x11    ; 3 = H
+    56 00000089 0F100E011E                      db 0x0F, 0x10, 0x0E, 0x01, 0x1E    ; 4 = S
+    57 0000008E 0E1111110E                      db 0x0E, 0x11, 0x11, 0x11, 0x0E    ; 5 = O
+    58 00000093 1E111E1211                      db 0x1E, 0x11, 0x1E, 0x12, 0x11    ; 6 = R
+    59 00000098 1F101E101F                      db 0x1F, 0x10, 0x1E, 0x10, 0x1F    ; 7 = E
+    60 0000009D 0001020003FF            w_catch: db 0, 1, 2, 0, 3, 0xFF            ; C A T C H  (0xFF = end)
+    61 000000A3 0400050607FF            w_score: db 4, 0, 5, 6, 7, 0xFF            ; S C O R E
+    62                                  
+    63                                  ; ------------------------------------------------------------
+    64                                  ; Strings (null terminated). *_len = length without the zero.
+    65                                  ; ------------------------------------------------------------
+    66 000000A9 48204F205720202054-     s_how:      db 'H O W   T O   P L A Y', 0
+    67 000000B2 204F20202050204C20-
+    68 000000BB 41205900           
+    69                                  s_how_len   equ $ - s_how - 1
+    70 000000BF 412046616C6C696E67-     s_sub:      db 'A Falling Object Collection Game', 0
+    71 000000C8 204F626A6563742043-
+    72 000000D1 6F6C6C656374696F6E-
+    73 000000DA 2047616D6500       
+    74                                  s_sub_len   equ $ - s_sub - 1
+    75 000000E0 434154434820544845-     s_hdr1:     db 'CATCH THESE TO SCORE:', 0
+    76 000000E9 534520544F2053434F-
+    77 000000F2 52453A00           
+    78 000000F6 41564F494420544845-     s_hdr2:     db 'AVOID THESE (THEY END THE GAME):', 0
+    79 000000FF 534520285448455920-
+    80 00000108 454E44205448452047-
+    81 00000111 414D45293A00       
+    82 00000117 436F696E20203D2031-     s_coin:     db 'Coin  = 10 pts', 0
+    83 00000120 302070747300       
+    84 00000126 4170706C65203D2032-     s_apple:    db 'Apple = 20 pts', 0
+    85 0000012F 302070747300       
+    86 00000135 5374617220203D2035-     s_star:     db 'Star  = 50 pts', 0
+    87 0000013E 302070747300       
+    88 00000144 426F6D6220203D2047-     s_bomb:     db 'Bomb  = GAME OVER', 0
+    89 0000014D 414D45204F56455200 
+    90 00000156 43726F7373203D2047-     s_cross:    db 'Cross = GAME OVER', 0
+    91 0000015F 414D45204F56455200 
+    92 00000168 4261736B6574203D20-     s_basket:   db 'Basket = YOU', 0
+    93 00000171 594F5500           
+    94 00000175 55736520746865204C-     s_inst1:    db 'Use the LEFT / RIGHT arrow keys to move the basket', 0
+    95 0000017E 454654202F20524947-
+    96 00000187 4854206172726F7720-
+    97 00000190 6B65797320746F206D-
+    98 00000199 6F7665207468652062-
+    99 000001A2 61736B657400       
+   100                                  s_inst1_len equ $ - s_inst1 - 1
+   101 000001A8 436174636820746865-     s_inst2:    db 'Catch the coins, apples and stars to score points', 0
+   102 000001B1 20636F696E732C2061-
+   103 000001BA 70706C657320616E64-
+   104 000001C3 20737461727320746F-
+   105 000001CC 2073636F726520706F-
+   106 000001D5 696E747300         
+   107                                  s_inst2_len equ $ - s_inst2 - 1
+   108 000001DA 436174636820612062-     s_inst3:    db 'Catch a bomb or a cross and the game is over!', 0
+   109 000001E3 6F6D62206F72206120-
+   110 000001EC 63726F737320616E64-
+   111 000001F5 207468652067616D65-
+   112 000001FE 206973206F76657221-
+   113 00000207 00                 
+   114                                  s_inst3_len equ $ - s_inst3 - 1
+   115 00000208 507265737320454E54-     s_enter:    db 'Press ENTER to Start', 0
+   116 00000211 455220746F20537461-
+   117 0000021A 727400             
+   118                                  s_enter_len equ $ - s_enter - 1
+   119 0000021D 507265737320454E54-     s_play:     db 'Press ENTER to Play', 0
+   120 00000226 455220746F20506C61-
+   121 0000022F 7900               
+   122                                  s_play_len equ $ - s_play - 1
+   123 00000231 53434F52453A00          s_score:    db 'SCORE:', 0
+   124 00000238 54494D453A00            s_time:     db 'TIME:', 0
+   125 0000023E 434154434820262053-     s_game:     db 'CATCH & SCORE', 0
+   126 00000247 434F524500         
+   127                                  s_game_len  equ $ - s_game - 1
+   128 0000024C 436F696E3D31302020-     s_legend:   db 'Coin=10   Apple=20   Star=50   Bomb / Cross = GAME OVER', 0
+   129 00000255 204170706C653D3230-
+   130 0000025E 202020537461723D35-
+   131 00000267 30202020426F6D6220-
+   132 00000270 2F2043726F7373203D-
+   133 00000279 2047414D45204F5645-
+   134 00000282 5200               
+   135                                  s_legend_len equ $ - s_legend - 1
+   136 00000284 472041204D20452020-     s_over:     db 'G A M E   O V E R', 0
+   137 0000028D 204F20562045205200 
+   138                                  s_over_len  equ $ - s_over - 1
+   139 00000296 5468652074696D6520-     s_timeup:   db 'The time is up!', 0
+   140 0000029F 69732075702100     
+   141                                  s_timeup_len equ $ - s_timeup - 1
+   142 000002A6 46494E414C2053434F-     s_final:    db 'FINAL SCORE:', 0
+   143 000002AF 52453A00           
+   144 000002B3 507265737320454E54-     s_exit:     db 'Press ENTER to exit', 0
+   145 000002BC 455220746F20657869-
+   146 000002C5 7400               
+   147                                  s_exit_len  equ $ - s_exit - 1
+   148                                  
+   149                                  ; ============================================================
+   150                                  ; SUBROUTINES
+   151                                  ; ============================================================
+   152                                  
+   153                                  ; ------------------------------------------------------------
+   154                                  ; fillrect - fills a rectangle of screen cells with one cell
+   155                                  ; Parameters (pushed in this order): top, left, height, width,
+   156                                  ;   cell (high byte attribute, low byte character).
+   157                                  ; height and width must be at least 1.
+   158                                  ; ------------------------------------------------------------
+   159 000002C7 55                      fillrect:   push bp
+   160 000002C8 89E5                                mov bp, sp                  ; [bp+12]=top  [bp+10]=left
+   161 000002CA 50                                  push ax                     ; [bp+8]=height [bp+6]=width
+   162 000002CB 53                                  push bx                     ; [bp+4]=cell
+   163 000002CC 51                                  push cx
+   164 000002CD 52                                  push dx
+   165 000002CE 57                                  push di
+   166 000002CF 06                                  push es
+   167 000002D0 B800B8                              mov ax, 0xb800
+   168 000002D3 8EC0                                mov es, ax                  ; es -> video memory
+   169 000002D5 B050                                mov al, 80                  ; columns per row
+   170 000002D7 F6660C                              mul byte [bp+12]            ; ax = top * 80
+   171 000002DA 03460A                              add ax, [bp+10]             ; + left
+   172 000002DD D1E0                                shl ax, 1                   ; two bytes per cell
+   173 000002DF 89C7                                mov di, ax                  ; di = offset of first cell
+   174 000002E1 8B5608                              mov dx, [bp+8]              ; rows left to fill
+   175 000002E4 8B4604                              mov ax, [bp+4]              ; ax = cell to write
+   176 000002E7 8B4E06                  fr_row:     mov cx, [bp+6]              ; columns in this row
+   177 000002EA 89FB                                mov bx, di                  ; bx = start of this row
+   178 000002EC 268907                  fr_col:     mov [es:bx], ax             ; write one cell
+   179 000002EF 81C30200                            add bx, 2                   ; next cell
+   180 000002F3 49                                  dec cx
+   181 000002F4 75F6                                jnz fr_col
+   182 000002F6 81C7A000                            add di, 160                 ; next screen row
+   183 000002FA 4A                                  dec dx
+   184 000002FB 75EA                                jnz fr_row
+   185 000002FD 07                                  pop es
+   186 000002FE 5F                                  pop di
+   187 000002FF 5A                                  pop dx
+   188 00000300 59                                  pop cx
+   189 00000301 5B                                  pop bx
+   190 00000302 58                                  pop ax
+   191 00000303 89EC                                mov sp, bp
+   192 00000305 5D                                  pop bp
+   193 00000306 C20A00                              ret 10
+   194                                  
+   195                                  ; ------------------------------------------------------------
+   196                                  ; clrscr - clears the whole screen (no parameters)
+   197                                  ; ------------------------------------------------------------
+   198 00000309 55                      clrscr:     push bp
+   199 0000030A 89E5                                mov bp, sp
+   200 0000030C 50                                  push ax
+   201 0000030D B80000                              mov ax, 0
+   202 00000310 50                                  push ax                     ; top = 0
+   203 00000311 50                                  push ax                     ; left = 0
+   204 00000312 B81900                              mov ax, 25
+   205 00000315 50                                  push ax                     ; height = 25
+   206 00000316 B85000                              mov ax, 80
+   207 00000319 50                                  push ax                     ; width = 80
+   208 0000031A B82007                              mov ax, 0x0720              ; space, grey on black
+   209 0000031D 50                                  push ax
+   210 0000031E E8A6FF                              call fillrect
+   211 00000321 58                                  pop ax
+   212 00000322 89EC                                mov sp, bp
+   213 00000324 5D                                  pop bp
+   214 00000325 C3                                  ret
+   215                                  
+   216                                  ; ------------------------------------------------------------
+   217                                  ; drawborder - double line yellow border around the screen
+   218                                  ; (no parameters)
+   219                                  ; ------------------------------------------------------------
+   220 00000326 55                      drawborder: push bp
+   221 00000327 89E5                                mov bp, sp
+   222 00000329 50                                  push ax
+   223                                              ; top line
+   224 0000032A B80000                              mov ax, 0
+   225 0000032D 50                                  push ax
+   226 0000032E 50                                  push ax
+   227 0000032F B80100                              mov ax, 1
+   228 00000332 50                                  push ax
+   229 00000333 B85000                              mov ax, 80
+   230 00000336 50                                  push ax
+   231 00000337 B8CD0E                              mov ax, 0x0ECD
+   232 0000033A 50                                  push ax
+   233 0000033B E889FF                              call fillrect
+   234                                              ; bottom line
+   235 0000033E B81800                              mov ax, 24
+   236 00000341 50                                  push ax
+   237 00000342 B80000                              mov ax, 0
+   238 00000345 50                                  push ax
+   239 00000346 B80100                              mov ax, 1
+   240 00000349 50                                  push ax
+   241 0000034A B85000                              mov ax, 80
+   242 0000034D 50                                  push ax
+   243 0000034E B8CD0E                              mov ax, 0x0ECD
+   244 00000351 50                                  push ax
+   245 00000352 E872FF                              call fillrect
+   246                                              ; left line
+   247 00000355 B80100                              mov ax, 1
+   248 00000358 50                                  push ax
+   249 00000359 B80000                              mov ax, 0
+   250 0000035C 50                                  push ax
+   251 0000035D B81700                              mov ax, 23
+   252 00000360 50                                  push ax
+   253 00000361 B80100                              mov ax, 1
+   254 00000364 50                                  push ax
+   255 00000365 B8BA0E                              mov ax, 0x0EBA
+   256 00000368 50                                  push ax
+   257 00000369 E85BFF                              call fillrect
+   258                                              ; right line
+   259 0000036C B80100                              mov ax, 1
+   260 0000036F 50                                  push ax
+   261 00000370 B84F00                              mov ax, 79
+   262 00000373 50                                  push ax
+   263 00000374 B81700                              mov ax, 23
+   264 00000377 50                                  push ax
+   265 00000378 B80100                              mov ax, 1
+   266 0000037B 50                                  push ax
+   267 0000037C B8BA0E                              mov ax, 0x0EBA
+   268 0000037F 50                                  push ax
+   269 00000380 E844FF                              call fillrect
+   270                                              ; top left corner
+   271 00000383 B80000                              mov ax, 0
+   272 00000386 50                                  push ax
+   273 00000387 50                                  push ax
+   274 00000388 B80100                              mov ax, 1
+   275 0000038B 50                                  push ax
+   276 0000038C 50                                  push ax
+   277 0000038D B8C90E                              mov ax, 0x0EC9
+   278 00000390 50                                  push ax
+   279 00000391 E833FF                              call fillrect
+   280                                              ; top right corner
+   281 00000394 B80000                              mov ax, 0
+   282 00000397 50                                  push ax
+   283 00000398 B84F00                              mov ax, 79
+   284 0000039B 50                                  push ax
+   285 0000039C B80100                              mov ax, 1
+   286 0000039F 50                                  push ax
+   287 000003A0 50                                  push ax
+   288 000003A1 B8BB0E                              mov ax, 0x0EBB
+   289 000003A4 50                                  push ax
+   290 000003A5 E81FFF                              call fillrect
+   291                                              ; bottom left corner
+   292 000003A8 B81800                              mov ax, 24
+   293 000003AB 50                                  push ax
+   294 000003AC B80000                              mov ax, 0
+   295 000003AF 50                                  push ax
+   296 000003B0 B80100                              mov ax, 1
+   297 000003B3 50                                  push ax
+   298 000003B4 50                                  push ax
+   299 000003B5 B8C80E                              mov ax, 0x0EC8
+   300 000003B8 50                                  push ax
+   301 000003B9 E80BFF                              call fillrect
+   302                                              ; bottom right corner
+   303 000003BC B81800                              mov ax, 24
+   304 000003BF 50                                  push ax
+   305 000003C0 B84F00                              mov ax, 79
+   306 000003C3 50                                  push ax
+   307 000003C4 B80100                              mov ax, 1
+   308 000003C7 50                                  push ax
+   309 000003C8 50                                  push ax
+   310 000003C9 B8BC0E                              mov ax, 0x0EBC
+   311 000003CC 50                                  push ax
+   312 000003CD E8F7FE                              call fillrect
+   313 000003D0 58                                  pop ax
+   314 000003D1 89EC                                mov sp, bp
+   315 000003D3 5D                                  pop bp
+   316 000003D4 C3                                  ret
+   317                                  
+   318                                  ; ------------------------------------------------------------
+   319                                  ; printstr - prints a null terminated string
+   320                                  ; Parameters: row, column, attribute, address of string
+   321                                  ; ------------------------------------------------------------
+   322 000003D5 55                      printstr:   push bp
+   323 000003D6 89E5                                mov bp, sp                  ; [bp+10]=row [bp+8]=col
+   324 000003D8 50                                  push ax                     ; [bp+6]=attr [bp+4]=string
+   325 000003D9 52                                  push dx
+   326 000003DA 56                                  push si
+   327 000003DB 57                                  push di
+   328 000003DC 06                                  push es
+   329 000003DD B800B8                              mov ax, 0xb800
+   330 000003E0 8EC0                                mov es, ax
+   331 000003E2 B050                                mov al, 80
+   332 000003E4 F6660A                              mul byte [bp+10]            ; ax = row * 80
+   333 000003E7 034608                              add ax, [bp+8]              ; + column
+   334 000003EA D1E0                                shl ax, 1
+   335 000003EC 89C7                                mov di, ax                  ; di = screen offset
+   336 000003EE 8B7604                              mov si, [bp+4]              ; si = string
+   337 000003F1 8A7606                              mov dh, [bp+6]              ; dh = attribute
+   338 000003F4 8A14                    ps_next:    mov dl, [si]                ; next character
+   339 000003F6 80FA00                              cmp dl, 0
+   340 000003F9 740D                                je ps_done                  ; zero ends the string
+   341 000003FB 268915                              mov [es:di], dx             ; attribute:character
+   342 000003FE 81C70200                            add di, 2
+   343 00000402 81C60100                            add si, 1
+   344 00000406 EBEC                                jmp ps_next
+   345 00000408 07                      ps_done:    pop es
+   346 00000409 5F                                  pop di
+   347 0000040A 5E                                  pop si
+   348 0000040B 5A                                  pop dx
+   349 0000040C 58                                  pop ax
+   350 0000040D 89EC                                mov sp, bp
+   351 0000040F 5D                                  pop bp
+   352 00000410 C20800                              ret 8
+   353                                  
+   354                                  ; ------------------------------------------------------------
+   355                                  ; printnum - prints an unsigned decimal number (no DIV needed:
+   356                                  ; digits are found by repeated subtraction of 1000/100/10/1)
+   357                                  ; Parameters: row, column, attribute, value, number of digits
+   358                                  ;             (1 to 4)
+   359                                  ; Local array: [bp-2]=1  [bp-4]=10  [bp-6]=100  [bp-8]=1000
+   360                                  ; ------------------------------------------------------------
+   361 00000413 55                      printnum:   push bp
+   362 00000414 89E5                                mov bp, sp                  ; [bp+12]=row [bp+10]=col
+   363 00000416 81EC0800                            sub sp, 8                   ; [bp+8]=attr [bp+6]=value
+   364 0000041A 50                                  push ax                     ; [bp+4]=digits
+   365 0000041B 53                                  push bx
+   366 0000041C 52                                  push dx
+   367 0000041D 56                                  push si
+   368 0000041E 57                                  push di
+   369 0000041F 06                                  push es
+   370 00000420 C746FE0100                          mov word [bp-2], 1
+   371 00000425 C746FC0A00                          mov word [bp-4], 10
+   372 0000042A C746FA6400                          mov word [bp-6], 100
+   373 0000042F C746F8E803                          mov word [bp-8], 1000
+   374 00000434 B800B8                              mov ax, 0xb800
+   375 00000437 8EC0                                mov es, ax
+   376 00000439 B050                                mov al, 80
+   377 0000043B F6660C                              mul byte [bp+12]            ; ax = row * 80
+   378 0000043E 03460A                              add ax, [bp+10]
+   379 00000441 D1E0                                shl ax, 1
+   380 00000443 89C7                                mov di, ax                  ; di = screen offset
+   381 00000445 8B7604                              mov si, [bp+4]              ; si = number of digits
+   382 00000448 D1E6                                shl si, 1                   ; bytes in local array
+   383 0000044A B80000                              mov ax, 0
+   384 0000044D 29F0                                sub ax, si
+   385 0000044F 89C6                                mov si, ax                  ; si = -2 * digits
+   386 00000451 8B4606                              mov ax, [bp+6]              ; ax = value
+   387 00000454 8B1A                    pn_digit:   mov bx, [bp+si]             ; bx = current divisor
+   388 00000456 BA0000                              mov dx, 0                   ; dx = digit counter
+   389 00000459 39D8                    pn_count:   cmp ax, bx
+   390 0000045B 7208                                jb pn_got                   ; remainder < divisor
+   391 0000045D 29D8                                sub ax, bx
+   392 0000045F 81C20100                            add dx, 1
+   393 00000463 EBF4                                jmp pn_count
+   394 00000465 80C230                  pn_got:     add dl, 0x30                ; digit -> ASCII
+   395 00000468 8A7608                              mov dh, [bp+8]              ; attribute
+   396 0000046B 268915                              mov [es:di], dx
+   397 0000046E 81C70200                            add di, 2
+   398 00000472 81C60200                            add si, 2                   ; next smaller divisor
+   399 00000476 81FE0000                            cmp si, 0
+   400 0000047A 75D8                                jne pn_digit
+   401 0000047C 07                                  pop es
+   402 0000047D 5F                                  pop di
+   403 0000047E 5E                                  pop si
+   404 0000047F 5A                                  pop dx
+   405 00000480 5B                                  pop bx
+   406 00000481 58                                  pop ax
+   407 00000482 89EC                                mov sp, bp
+   408 00000484 5D                                  pop bp
+   409 00000485 C20A00                              ret 10
+   410                                  
+   411                                  ; ------------------------------------------------------------
+   412                                  ; drawobj - draws a 3x3 object (9 words, row by row)
+   413                                  ; Parameters: row, column (top-left cell), address of sprite
+   414                                  ; ------------------------------------------------------------
+   415 00000488 55                      drawobj:    push bp
+   416 00000489 89E5                                mov bp, sp                  ; [bp+8]=row [bp+6]=col
+   417 0000048B 50                                  push ax                     ; [bp+4]=sprite
+   418 0000048C 53                                  push bx
+   419 0000048D 51                                  push cx
+   420 0000048E 52                                  push dx
+   421 0000048F 56                                  push si
+   422 00000490 57                                  push di
+   423 00000491 06                                  push es
+   424 00000492 B800B8                              mov ax, 0xb800
+   425 00000495 8EC0                                mov es, ax
+   426 00000497 B050                                mov al, 80
+   427 00000499 F66608                              mul byte [bp+8]             ; ax = row * 80
+   428 0000049C 034606                              add ax, [bp+6]
+   429 0000049F D1E0                                shl ax, 1
+   430 000004A1 89C7                                mov di, ax                  ; di = offset of top-left
+   431 000004A3 8B7604                              mov si, [bp+4]              ; si = sprite data
+   432 000004A6 BA0300                              mov dx, 3                   ; 3 object rows
+   433 000004A9 B90300                  do_row:     mov cx, 3                   ; 3 object columns
+   434 000004AC 89FB                                mov bx, di
+   435 000004AE 8B04                    do_col:     mov ax, [si]                ; next cell of sprite
+   436 000004B0 3D0000                              cmp ax, 0
+   437 000004B3 7403                                je do_skip                  ; 0 = transparent
+   438 000004B5 268907                              mov [es:bx], ax
+   439 000004B8 81C30200                do_skip:    add bx, 2
+   440 000004BC 81C60200                            add si, 2
+   441 000004C0 49                                  dec cx
+   442 000004C1 75EB                                jnz do_col
+   443 000004C3 81C7A000                            add di, 160                 ; next screen row
+   444 000004C7 4A                                  dec dx
+   445 000004C8 75DF                                jnz do_row
+   446 000004CA 07                                  pop es
+   447 000004CB 5F                                  pop di
+   448 000004CC 5E                                  pop si
+   449 000004CD 5A                                  pop dx
+   450 000004CE 59                                  pop cx
+   451 000004CF 5B                                  pop bx
+   452 000004D0 58                                  pop ax
+   453 000004D1 89EC                                mov sp, bp
+   454 000004D3 5D                                  pop bp
+   455 000004D4 C20600                              ret 6
+   456                                  
+   457                                  ; ------------------------------------------------------------
+   458                                  ; drawletter - draws one big 5x5 letter. Every pixel is a full
+   459                                  ; block 2 cells wide, so a letter covers 5 rows x 10 columns.
+   460                                  ; Parameters: row, column, attribute, address of 5-byte shape
+   461                                  ; Local: [bp-2] = pixel rows still to draw
+   462                                  ; ------------------------------------------------------------
+   463 000004D7 55                      drawletter: push bp
+   464 000004D8 89E5                                mov bp, sp                  ; [bp+10]=row [bp+8]=col
+   465 000004DA 81EC0200                            sub sp, 2                   ; [bp+6]=attr [bp+4]=shape
+   466 000004DE 50                                  push ax
+   467 000004DF 53                                  push bx
+   468 000004E0 51                                  push cx
+   469 000004E1 52                                  push dx
+   470 000004E2 56                                  push si
+   471 000004E3 57                                  push di
+   472 000004E4 06                                  push es
+   473 000004E5 B800B8                              mov ax, 0xb800
+   474 000004E8 8EC0                                mov es, ax
+   475 000004EA B050                                mov al, 80
+   476 000004EC F6660A                              mul byte [bp+10]            ; ax = row * 80
+   477 000004EF 034608                              add ax, [bp+8]              ; + column
+   478 000004F2 D1E0                                shl ax, 1
+   479 000004F4 89C7                                mov di, ax                  ; di = start of letter row
+   480 000004F6 8B7604                              mov si, [bp+4]              ; si = shape bytes
+   481 000004F9 8A7606                              mov dh, [bp+6]              ; dh = colour
+   482 000004FC B2DB                                mov dl, 0xDB                ; dl = full block
+   483 000004FE C746FE0500                          mov word [bp-2], 5          ; 5 pixel rows
+   484 00000503 8A04                    dlt_row:    mov al, [si]                ; al = pixels of this row
+   485 00000505 89FB                                mov bx, di                  ; bx = screen pointer
+   486 00000507 B90500                              mov cx, 5                   ; 5 pixels per row
+   487 0000050A A810                    dlt_pix:    test al, 0x10               ; is the left pixel set?
+   488 0000050C 7407                                jz dlt_skip
+   489 0000050E 268917                              mov [es:bx], dx             ; pixel = two block cells
+   490 00000511 26895702                            mov [es:bx+2], dx
+   491 00000515 81C30400                dlt_skip:   add bx, 4                   ; next pixel (2 cells)
+   492 00000519 D0E0                                shl al, 1                   ; bring next pixel to bit 4
+   493 0000051B 49                                  dec cx
+   494 0000051C 75EC                                jnz dlt_pix
+   495 0000051E 81C60100                            add si, 1                   ; next shape byte
+   496 00000522 81C7A000                            add di, 160                 ; next screen row
+   497 00000526 816EFE0100                          sub word [bp-2], 1
+   498 0000052B 75D6                                jnz dlt_row
+   499 0000052D 07                                  pop es
+   500 0000052E 5F                                  pop di
+   501 0000052F 5E                                  pop si
+   502 00000530 5A                                  pop dx
+   503 00000531 59                                  pop cx
+   504 00000532 5B                                  pop bx
+   505 00000533 58                                  pop ax
+   506 00000534 89EC                                mov sp, bp
+   507 00000536 5D                                  pop bp
+   508 00000537 C20800                              ret 8
+   509                                  
+   510                                  ; ------------------------------------------------------------
+   511                                  ; drawword - draws a word of big letters, left to right
+   512                                  ; Parameters: row, column, attribute, address of word,
+   513                                  ;             address of font
+   514                                  ; The word is a list of letter numbers ended by 0xFF.
+   515                                  ; Local: [bp-2] = column of the next letter
+   516                                  ; ------------------------------------------------------------
+   517 0000053A 55                      drawword:   push bp
+   518 0000053B 89E5                                mov bp, sp                  ; [bp+12]=row [bp+10]=col
+   519 0000053D 81EC0200                            sub sp, 2                   ; [bp+8]=attr [bp+6]=word
+   520 00000541 50                                  push ax                     ; [bp+4]=font
+   521 00000542 53                                  push bx
+   522 00000543 56                                  push si
+   523 00000544 8B460A                              mov ax, [bp+10]
+   524 00000547 8946FE                              mov [bp-2], ax              ; first letter column
+   525 0000054A 8B7606                              mov si, [bp+6]              ; si = letter numbers
+   526 0000054D 8A04                    dw_next:    mov al, [si]
+   527 0000054F 3CFF                                cmp al, 0xFF
+   528 00000551 7425                                je dw_done                  ; 0xFF ends the word
+   529 00000553 B400                                mov ah, 0
+   530 00000555 89C3                                mov bx, ax
+   531 00000557 D1E3                                shl bx, 1
+   532 00000559 D1E3                                shl bx, 1                   ; bx = number * 4
+   533 0000055B 01C3                                add bx, ax                  ; bx = number * 5
+   534 0000055D 035E04                              add bx, [bp+4]              ; + font = this letter's shape
+   535 00000560 FF760C                              push word [bp+12]           ; row
+   536 00000563 FF76FE                              push word [bp-2]            ; column
+   537 00000566 FF7608                              push word [bp+8]            ; colour
+   538 00000569 53                                  push bx                     ; shape address
+   539 0000056A E86AFF                              call drawletter
+   540 0000056D 8146FE0B00                          add word [bp-2], 11         ; 10 columns + 1 gap
+   541 00000572 81C60100                            add si, 1
+   542 00000576 EBD5                                jmp dw_next
+   543 00000578 5E                      dw_done:    pop si
+   544 00000579 5B                                  pop bx
+   545 0000057A 58                                  pop ax
+   546 0000057B 89EC                                mov sp, bp
+   547 0000057D 5D                                  pop bp
+   548 0000057E C20A00                              ret 10
+   549                                  
+   550                                  ; ------------------------------------------------------------
+   551                                  ; delay - busy wait, about (count * 65536) loop iterations
+   552                                  ; Parameter: count
+   553                                  ; ------------------------------------------------------------
+   554 00000581 55                      delay:      push bp
+   555 00000582 89E5                                mov bp, sp
+   556 00000584 53                                  push bx
+   557 00000585 51                                  push cx
+   558 00000586 8B5E04                              mov bx, [bp+4]              ; outer count
+   559 00000589 B90000                  dl_outer:   mov cx, 0                   ; 0 -> 65536 inner rounds
+   560 0000058C 49                      dl_inner:   dec cx
+   561 0000058D 75FD                                jnz dl_inner
+   562 0000058F 4B                                  dec bx
+   563 00000590 75F7                                jnz dl_outer
+   564 00000592 59                                  pop cx
+   565 00000593 5B                                  pop bx
+   566 00000594 89EC                                mov sp, bp
+   567 00000596 5D                                  pop bp
+   568 00000597 C20200                              ret 2
+   569                                  
+   570                                  ; ------------------------------------------------------------
+   571                                  ; waitenter - waits until the Enter key (ASCII 13) is pressed
+   572                                  ; (uses BIOS keyboard service INT 16h / AH=0)
+   573                                  ; ------------------------------------------------------------
+   574 0000059A 55                      waitenter:  push bp
+   575 0000059B 89E5                                mov bp, sp
+   576 0000059D 50                                  push ax
+   577 0000059E B400                    we_again:   mov ah, 0
+   578 000005A0 CD16                                int 0x16
+   579 000005A2 3C0D                                cmp al, 13
+   580 000005A4 75F8                                jne we_again
+   581 000005A6 58                                  pop ax
+   582 000005A7 89EC                                mov sp, bp
+   583 000005A9 5D                                  pop bp
+   584 000005AA C3                                  ret
+   585                                  
+   586                                  ; ============================================================
+   587                                  ; MAIN PROGRAM
+   588                                  ; ============================================================
+   589                                  start:
+   590                                  
+   591                                  ; ------------------------------------------------------------
+   592                                  ; PAGE 1 : TITLE SCREEN - big block letters "CATCH / SCORE"
+   593                                  ; ------------------------------------------------------------
+   594 000005AB E85BFD                              call clrscr
+   595 000005AE E875FD                              call drawborder
+   596                                  
+   597                                              ; shadow of CATCH (one cell down and right)
+   598 000005B1 B80300                              mov ax, 3
+   599 000005B4 50                                  push ax                     ; row
+   600 000005B5 B80400                              mov ax, 4
+   601 000005B8 50                                  push ax                     ; column
+   602 000005B9 B80100                              mov ax, 0x01
+   603 000005BC 50                                  push ax                     ; dark blue
+   604 000005BD B8[9D00]                            mov ax, w_catch
+   605 000005C0 50                                  push ax                     ; word = C A T C H
+   606 000005C1 B8[7500]                            mov ax, font
+   607 000005C4 50                                  push ax                     ; letter shapes
+   608 000005C5 E872FF                              call drawword
+   609                                              ; CATCH in light blue
+   610 000005C8 B80200                              mov ax, 2
+   611 000005CB 50                                  push ax
+   612 000005CC B80300                              mov ax, 3
+   613 000005CF 50                                  push ax
+   614 000005D0 B80900                              mov ax, 0x09
+   615 000005D3 50                                  push ax
+   616 000005D4 B8[9D00]                            mov ax, w_catch
+   617 000005D7 50                                  push ax
+   618 000005D8 B8[7500]                            mov ax, font
+   619 000005DB 50                                  push ax
+   620 000005DC E85BFF                              call drawword
+   621                                              ; shadow of SCORE
+   622 000005DF B80900                              mov ax, 9
+   623 000005E2 50                                  push ax
+   624 000005E3 B81500                              mov ax, 21
+   625 000005E6 50                                  push ax
+   626 000005E7 B80600                              mov ax, 0x06
+   627 000005EA 50                                  push ax                     ; brown
+   628 000005EB B8[A300]                            mov ax, w_score
+   629 000005EE 50                                  push ax
+   630 000005EF B8[7500]                            mov ax, font
+   631 000005F2 50                                  push ax
+   632 000005F3 E844FF                              call drawword
+   633                                              ; SCORE in yellow
+   634 000005F6 B80800                              mov ax, 8
+   635 000005F9 50                                  push ax
+   636 000005FA B81400                              mov ax, 20
+   637 000005FD 50                                  push ax
+   638 000005FE B80E00                              mov ax, 0x0E
+   639 00000601 50                                  push ax
+   640 00000602 B8[A300]                            mov ax, w_score
+   641 00000605 50                                  push ax
+   642 00000606 B8[7500]                            mov ax, font
+   643 00000609 50                                  push ax
+   644 0000060A E82DFF                              call drawword
+   645                                  
+   646                                              ; decoration: falling objects around the title
+   647 0000060D B80300                              mov ax, 3
+   648 00000610 50                                  push ax
+   649 00000611 B84200                              mov ax, 66
+   650 00000614 50                                  push ax
+   651 00000615 B8[2D00]                            mov ax, star
+   652 00000618 50                                  push ax
+   653 00000619 E86CFE                              call drawobj
+   654 0000061C B80300                              mov ax, 3
+   655 0000061F 50                                  push ax
+   656 00000620 B84800                              mov ax, 72
+   657 00000623 50                                  push ax
+   658 00000624 B8[0900]                            mov ax, coin
+   659 00000627 50                                  push ax
+   660 00000628 E85DFE                              call drawobj
+   661 0000062B B80900                              mov ax, 9
+   662 0000062E 50                                  push ax
+   663 0000062F B80600                              mov ax, 6
+   664 00000632 50                                  push ax
+   665 00000633 B8[1B00]                            mov ax, apple
+   666 00000636 50                                  push ax
+   667 00000637 E84EFE                              call drawobj
+   668 0000063A B80900                              mov ax, 9
+   669 0000063D 50                                  push ax
+   670 0000063E B80C00                              mov ax, 12
+   671 00000641 50                                  push ax
+   672 00000642 B8[3F00]                            mov ax, bomb
+   673 00000645 50                                  push ax
+   674 00000646 E83FFE                              call drawobj
+   675 00000649 B81000                              mov ax, 16
+   676 0000064C 50                                  push ax
+   677 0000064D B80A00                              mov ax, 10
+   678 00000650 50                                  push ax
+   679 00000651 B8[0900]                            mov ax, coin
+   680 00000654 50                                  push ax
+   681 00000655 E830FE                              call drawobj
+   682 00000658 B81000                              mov ax, 16
+   683 0000065B 50                                  push ax
+   684 0000065C B84400                              mov ax, 68
+   685 0000065F 50                                  push ax
+   686 00000660 B8[2D00]                            mov ax, star
+   687 00000663 50                                  push ax
+   688 00000664 E821FE                              call drawobj
+   689 00000667 B81300                              mov ax, 19
+   690 0000066A 50                                  push ax
+   691 0000066B B81000                              mov ax, 16
+   692 0000066E 50                                  push ax
+   693 0000066F B8[3F00]                            mov ax, bomb
+   694 00000672 50                                  push ax
+   695 00000673 E812FE                              call drawobj
+   696 00000676 B81300                              mov ax, 19
+   697 00000679 50                                  push ax
+   698 0000067A B83C00                              mov ax, 60
+   699 0000067D 50                                  push ax
+   700 0000067E B8[5100]                            mov ax, cross
+   701 00000681 50                                  push ax
+   702 00000682 E803FE                              call drawobj
+   703 00000685 B81300                              mov ax, 19
+   704 00000688 50                                  push ax
+   705 00000689 B82600                              mov ax, 38
+   706 0000068C 50                                  push ax
+   707 0000068D B8[6300]                            mov ax, basket
+   708 00000690 50                                  push ax
+   709 00000691 E8F4FD                              call drawobj
+   710                                  
+   711                                              ; ground under the basket
+   712 00000694 B81600                              mov ax, 22
+   713 00000697 50                                  push ax
+   714 00000698 B80100                              mov ax, 1
+   715 0000069B 50                                  push ax
+   716 0000069C B80100                              mov ax, 1
+   717 0000069F 50                                  push ax
+   718 000006A0 B84E00                              mov ax, 78
+   719 000006A3 50                                  push ax
+   720 000006A4 B8DF06                              mov ax, 0x06DF
+   721 000006A7 50                                  push ax
+   722 000006A8 E81CFC                              call fillrect
+   723                                  
+   724                                              ; tagline
+   725 000006AB B80F00                              mov ax, 15
+   726 000006AE 50                                  push ax
+   727 000006AF B81800                              mov ax, (80 - s_sub_len) / 2
+   728 000006B2 50                                  push ax
+   729 000006B3 B80B00                              mov ax, 0x0B
+   730 000006B6 50                                  push ax
+   731 000006B7 B8[BF00]                            mov ax, s_sub
+   732 000006BA 50                                  push ax
+   733 000006BB E817FD                              call printstr
+   734                                              ; press enter prompt
+   735 000006BE B81200                              mov ax, 18
+   736 000006C1 50                                  push ax
+   737 000006C2 B81E00                              mov ax, (80 - s_enter_len) / 2
+   738 000006C5 50                                  push ax
+   739 000006C6 B80F00                              mov ax, 0x0F
+   740 000006C9 50                                  push ax
+   741 000006CA B8[0802]                            mov ax, s_enter
+   742 000006CD 50                                  push ax
+   743 000006CE E804FD                              call printstr
+   744                                  
+   745 000006D1 E8C6FE                              call waitenter              ; page 1 -> page 2 on Enter
+   746                                  
+   747                                  ; ------------------------------------------------------------
+   748                                  ; PAGE 2 : INSTRUCTIONS
+   749                                  ; ------------------------------------------------------------
+   750 000006D4 E832FC                              call clrscr
+   751 000006D7 E84CFC                              call drawborder
+   752                                  
+   753                                              ; page heading
+   754 000006DA B80200                              mov ax, 2
+   755 000006DD 50                                  push ax
+   756 000006DE B81D00                              mov ax, (80 - s_how_len) / 2
+   757 000006E1 50                                  push ax
+   758 000006E2 B80E00                              mov ax, 0x0E
+   759 000006E5 50                                  push ax
+   760 000006E6 B8[A900]                            mov ax, s_how
+   761 000006E9 50                                  push ax
+   762 000006EA E8E8FC                              call printstr
+   763                                  
+   764                                  
+   765                                              ; header: score objects
+   766 000006ED B80500                              mov ax, 5
+   767 000006F0 50                                  push ax
+   768 000006F1 B80E00                              mov ax, 14
+   769 000006F4 50                                  push ax
+   770 000006F5 B80A00                              mov ax, 0x0A
+   771 000006F8 50                                  push ax
+   772 000006F9 B8[E000]                            mov ax, s_hdr1
+   773 000006FC 50                                  push ax
+   774 000006FD E8D5FC                              call printstr
+   775                                              ; coin sprite + label
+   776 00000700 B80600                              mov ax, 6
+   777 00000703 50                                  push ax
+   778 00000704 B80E00                              mov ax, 14
+   779 00000707 50                                  push ax
+   780 00000708 B8[0900]                            mov ax, coin
+   781 0000070B 50                                  push ax
+   782 0000070C E879FD                              call drawobj
+   783 0000070F B80700                              mov ax, 7
+   784 00000712 50                                  push ax
+   785 00000713 B81200                              mov ax, 18
+   786 00000716 50                                  push ax
+   787 00000717 B80F00                              mov ax, 0x0F
+   788 0000071A 50                                  push ax
+   789 0000071B B8[1701]                            mov ax, s_coin
+   790 0000071E 50                                  push ax
+   791 0000071F E8B3FC                              call printstr
+   792                                              ; apple sprite + label
+   793 00000722 B80600                              mov ax, 6
+   794 00000725 50                                  push ax
+   795 00000726 B82200                              mov ax, 34
+   796 00000729 50                                  push ax
+   797 0000072A B8[1B00]                            mov ax, apple
+   798 0000072D 50                                  push ax
+   799 0000072E E857FD                              call drawobj
+   800 00000731 B80700                              mov ax, 7
+   801 00000734 50                                  push ax
+   802 00000735 B82600                              mov ax, 38
+   803 00000738 50                                  push ax
+   804 00000739 B80F00                              mov ax, 0x0F
+   805 0000073C 50                                  push ax
+   806 0000073D B8[2601]                            mov ax, s_apple
+   807 00000740 50                                  push ax
+   808 00000741 E891FC                              call printstr
+   809                                              ; star sprite + label
+   810 00000744 B80600                              mov ax, 6
+   811 00000747 50                                  push ax
+   812 00000748 B83600                              mov ax, 54
+   813 0000074B 50                                  push ax
+   814 0000074C B8[2D00]                            mov ax, star
+   815 0000074F 50                                  push ax
+   816 00000750 E835FD                              call drawobj
+   817 00000753 B80700                              mov ax, 7
+   818 00000756 50                                  push ax
+   819 00000757 B83A00                              mov ax, 58
+   820 0000075A 50                                  push ax
+   821 0000075B B80F00                              mov ax, 0x0F
+   822 0000075E 50                                  push ax
+   823 0000075F B8[3501]                            mov ax, s_star
+   824 00000762 50                                  push ax
+   825 00000763 E86FFC                              call printstr
+   826                                  
+   827                                              ; header: game ending objects
+   828 00000766 B80A00                              mov ax, 10
+   829 00000769 50                                  push ax
+   830 0000076A B80E00                              mov ax, 14
+   831 0000076D 50                                  push ax
+   832 0000076E B80C00                              mov ax, 0x0C
+   833 00000771 50                                  push ax
+   834 00000772 B8[F600]                            mov ax, s_hdr2
+   835 00000775 50                                  push ax
+   836 00000776 E85CFC                              call printstr
+   837                                              ; bomb sprite + label
+   838 00000779 B80B00                              mov ax, 11
+   839 0000077C 50                                  push ax
+   840 0000077D B81800                              mov ax, 24
+   841 00000780 50                                  push ax
+   842 00000781 B8[3F00]                            mov ax, bomb
+   843 00000784 50                                  push ax
+   844 00000785 E800FD                              call drawobj
+   845 00000788 B80C00                              mov ax, 12
+   846 0000078B 50                                  push ax
+   847 0000078C B81C00                              mov ax, 28
+   848 0000078F 50                                  push ax
+   849 00000790 B80F00                              mov ax, 0x0F
+   850 00000793 50                                  push ax
+   851 00000794 B8[4401]                            mov ax, s_bomb
+   852 00000797 50                                  push ax
+   853 00000798 E83AFC                              call printstr
+   854                                              ; cross sprite + label
+   855 0000079B B80B00                              mov ax, 11
+   856 0000079E 50                                  push ax
+   857 0000079F B83000                              mov ax, 48
+   858 000007A2 50                                  push ax
+   859 000007A3 B8[5100]                            mov ax, cross
+   860 000007A6 50                                  push ax
+   861 000007A7 E8DEFC                              call drawobj
+   862 000007AA B80C00                              mov ax, 12
+   863 000007AD 50                                  push ax
+   864 000007AE B83400                              mov ax, 52
+   865 000007B1 50                                  push ax
+   866 000007B2 B80F00                              mov ax, 0x0F
+   867 000007B5 50                                  push ax
+   868 000007B6 B8[5601]                            mov ax, s_cross
+   869 000007B9 50                                  push ax
+   870 000007BA E818FC                              call printstr
+   871                                  
+   872                                              ; player sprite + label
+   873 000007BD B80F00                              mov ax, 15
+   874 000007C0 50                                  push ax
+   875 000007C1 B80E00                              mov ax, 14
+   876 000007C4 50                                  push ax
+   877 000007C5 B8[6300]                            mov ax, basket
+   878 000007C8 50                                  push ax
+   879 000007C9 E8BCFC                              call drawobj
+   880 000007CC B81000                              mov ax, 16
+   881 000007CF 50                                  push ax
+   882 000007D0 B81200                              mov ax, 18
+   883 000007D3 50                                  push ax
+   884 000007D4 B80B00                              mov ax, 0x0B
+   885 000007D7 50                                  push ax
+   886 000007D8 B8[6801]                            mov ax, s_basket
+   887 000007DB 50                                  push ax
+   888 000007DC E8F6FB                              call printstr
+   889                                  
+   890                                              ; instructions
+   891 000007DF B81200                              mov ax, 18
+   892 000007E2 50                                  push ax
+   893 000007E3 B80F00                              mov ax, (80 - s_inst1_len) / 2
+   894 000007E6 50                                  push ax
+   895 000007E7 B80700                              mov ax, 0x07
+   896 000007EA 50                                  push ax
+   897 000007EB B8[7501]                            mov ax, s_inst1
+   898 000007EE 50                                  push ax
+   899 000007EF E8E3FB                              call printstr
+   900 000007F2 B81300                              mov ax, 19
+   901 000007F5 50                                  push ax
+   902 000007F6 B80F00                              mov ax, (80 - s_inst2_len) / 2
+   903 000007F9 50                                  push ax
+   904 000007FA B80700                              mov ax, 0x07
+   905 000007FD 50                                  push ax
+   906 000007FE B8[A801]                            mov ax, s_inst2
+   907 00000801 50                                  push ax
+   908 00000802 E8D0FB                              call printstr
+   909 00000805 B81400                              mov ax, 20
+   910 00000808 50                                  push ax
+   911 00000809 B81100                              mov ax, (80 - s_inst3_len) / 2
+   912 0000080C 50                                  push ax
+   913 0000080D B80700                              mov ax, 0x07
+   914 00000810 50                                  push ax
+   915 00000811 B8[DA01]                            mov ax, s_inst3
+   916 00000814 50                                  push ax
+   917 00000815 E8BDFB                              call printstr
+   918                                  
+   919                                              ; press enter prompt
+   920 00000818 B81600                              mov ax, 22
+   921 0000081B 50                                  push ax
+   922 0000081C B81E00                              mov ax, (80 - s_play_len) / 2
+   923 0000081F 50                                  push ax
+   924 00000820 B80A00                              mov ax, 0x0A
+   925 00000823 50                                  push ax
+   926 00000824 B8[1D02]                            mov ax, s_play
+   927 00000827 50                                  push ax
+   928 00000828 E8AAFB                              call printstr
+   929                                  
+   930 0000082B E86CFD                              call waitenter              ; page 2 -> game on Enter
+   931                                  
+   932                                  ; ------------------------------------------------------------
+   933                                  ; GAME SCREEN
+   934                                  ; ------------------------------------------------------------
+   935 0000082E E8D8FA                              call clrscr
+   936                                  
+   937                                              ; blue HUD bar on row 0
+   938 00000831 B80000                              mov ax, 0
+   939 00000834 50                                  push ax
+   940 00000835 50                                  push ax
+   941 00000836 B80100                              mov ax, 1
+   942 00000839 50                                  push ax
+   943 0000083A B85000                              mov ax, 80
+   944 0000083D 50                                  push ax
+   945 0000083E B8201F                              mov ax, 0x1F20
+   946 00000841 50                                  push ax
+   947 00000842 E882FA                              call fillrect
+   948                                              ; "SCORE:" label
+   949 00000845 B80000                              mov ax, 0
+   950 00000848 50                                  push ax
+   951 00000849 B80200                              mov ax, 2
+   952 0000084C 50                                  push ax
+   953 0000084D B81F00                              mov ax, 0x1F
+   954 00000850 50                                  push ax
+   955 00000851 B8[3102]                            mov ax, s_score
+   956 00000854 50                                  push ax
+   957 00000855 E87DFB                              call printstr
+   958                                              ; game name in the middle of the HUD
+   959 00000858 B80000                              mov ax, 0
+   960 0000085B 50                                  push ax
+   961 0000085C B82100                              mov ax, (80 - s_game_len) / 2
+   962 0000085F 50                                  push ax
+   963 00000860 B81E00                              mov ax, 0x1E
+   964 00000863 50                                  push ax
+   965 00000864 B8[3E02]                            mov ax, s_game
+   966 00000867 50                                  push ax
+   967 00000868 E86AFB                              call printstr
+   968                                              ; "TIME:" label
+   969 0000086B B80000                              mov ax, 0
+   970 0000086E 50                                  push ax
+   971 0000086F B84000                              mov ax, 64
+   972 00000872 50                                  push ax
+   973 00000873 B81F00                              mov ax, 0x1F
+   974 00000876 50                                  push ax
+   975 00000877 B8[3802]                            mov ax, s_time
+   976 0000087A 50                                  push ax
+   977 0000087B E857FB                              call printstr
+   978                                              ; separator line under the HUD (row 1)
+   979 0000087E B80100                              mov ax, 1
+   980 00000881 50                                  push ax
+   981 00000882 B80000                              mov ax, 0
+   982 00000885 50                                  push ax
+   983 00000886 B80100                              mov ax, 1
+   984 00000889 50                                  push ax
+   985 0000088A B85000                              mov ax, 80
+   986 0000088D 50                                  push ax
+   987 0000088E B8C407                              mov ax, 0x07C4
+   988 00000891 50                                  push ax
+   989 00000892 E832FA                              call fillrect
+   990                                              ; ground (row 23)
+   991 00000895 B81700                              mov ax, 23
+   992 00000898 50                                  push ax
+   993 00000899 B80000                              mov ax, 0
+   994 0000089C 50                                  push ax
+   995 0000089D B80100                              mov ax, 1
+   996 000008A0 50                                  push ax
+   997 000008A1 B85000                              mov ax, 80
+   998 000008A4 50                                  push ax
+   999 000008A5 B8DF06                              mov ax, 0x06DF
+  1000 000008A8 50                                  push ax
+  1001 000008A9 E81BFA                              call fillrect
+  1002                                              ; legend bar (row 24)
+  1003 000008AC B81800                              mov ax, 24
+  1004 000008AF 50                                  push ax
+  1005 000008B0 B80000                              mov ax, 0
+  1006 000008B3 50                                  push ax
+  1007 000008B4 B80100                              mov ax, 1
+  1008 000008B7 50                                  push ax
+  1009 000008B8 B85000                              mov ax, 80
+  1010 000008BB 50                                  push ax
+  1011 000008BC B82070                              mov ax, 0x7020
+  1012 000008BF 50                                  push ax
+  1013 000008C0 E804FA                              call fillrect
+  1014 000008C3 B81800                              mov ax, 24
+  1015 000008C6 50                                  push ax
+  1016 000008C7 B80C00                              mov ax, (80 - s_legend_len) / 2
+  1017 000008CA 50                                  push ax
+  1018 000008CB B87000                              mov ax, 0x70
+  1019 000008CE 50                                  push ax
+  1020 000008CF B8[4C02]                            mov ax, s_legend
+  1021 000008D2 50                                  push ax
+  1022 000008D3 E8FFFA                              call printstr
+  1023                                  
+  1024                                              ; ---- objects placed in the play area (rows 2..22) ----
+  1025                                              ; score-giving objects
+  1026 000008D6 B80300                              mov ax, 3
+  1027 000008D9 50                                  push ax
+  1028 000008DA B80800                              mov ax, 8
+  1029 000008DD 50                                  push ax
+  1030 000008DE B8[0900]                            mov ax, coin
+  1031 000008E1 50                                  push ax
+  1032 000008E2 E8A3FB                              call drawobj
+  1033 000008E5 B80A00                              mov ax, 10
+  1034 000008E8 50                                  push ax
+  1035 000008E9 B81E00                              mov ax, 30
+  1036 000008EC 50                                  push ax
+  1037 000008ED B8[1B00]                            mov ax, apple
+  1038 000008F0 50                                  push ax
+  1039 000008F1 E894FB                              call drawobj
+  1040 000008F4 B80500                              mov ax, 5
+  1041 000008F7 50                                  push ax
+  1042 000008F8 B82E00                              mov ax, 46
+  1043 000008FB 50                                  push ax
+  1044 000008FC B8[2D00]                            mov ax, star
+  1045 000008FF 50                                  push ax
+  1046 00000900 E885FB                              call drawobj
+  1047 00000903 B80C00                              mov ax, 12
+  1048 00000906 50                                  push ax
+  1049 00000907 B84200                              mov ax, 66
+  1050 0000090A 50                                  push ax
+  1051 0000090B B8[0900]                            mov ax, coin
+  1052 0000090E 50                                  push ax
+  1053 0000090F E876FB                              call drawobj
+  1054 00000912 B80F00                              mov ax, 15
+  1055 00000915 50                                  push ax
+  1056 00000916 B80C00                              mov ax, 12
+  1057 00000919 50                                  push ax
+  1058 0000091A B8[2D00]                            mov ax, star
+  1059 0000091D 50                                  push ax
+  1060 0000091E E867FB                              call drawobj
+  1061 00000921 B80300                              mov ax, 3
+  1062 00000924 50                                  push ax
+  1063 00000925 B84600                              mov ax, 70
+  1064 00000928 50                                  push ax
+  1065 00000929 B8[1B00]                            mov ax, apple
+  1066 0000092C 50                                  push ax
+  1067 0000092D E858FB                              call drawobj
+  1068                                              ; game-ending objects
+  1069 00000930 B80400                              mov ax, 4
+  1070 00000933 50                                  push ax
+  1071 00000934 B81800                              mov ax, 24
+  1072 00000937 50                                  push ax
+  1073 00000938 B8[3F00]                            mov ax, bomb
+  1074 0000093B 50                                  push ax
+  1075 0000093C E849FB                              call drawobj
+  1076 0000093F B80800                              mov ax, 8
+  1077 00000942 50                                  push ax
+  1078 00000943 B83800                              mov ax, 56
+  1079 00000946 50                                  push ax
+  1080 00000947 B8[5100]                            mov ax, cross
+  1081 0000094A 50                                  push ax
+  1082 0000094B E83AFB                              call drawobj
+  1083 0000094E B80E00                              mov ax, 14
+  1084 00000951 50                                  push ax
+  1085 00000952 B83000                              mov ax, 48
+  1086 00000955 50                                  push ax
+  1087 00000956 B8[3F00]                            mov ax, bomb
+  1088 00000959 50                                  push ax
+  1089 0000095A E82BFB                              call drawobj
+  1090 0000095D B80900                              mov ax, 9
+  1091 00000960 50                                  push ax
+  1092 00000961 B80400                              mov ax, 4
+  1093 00000964 50                                  push ax
+  1094 00000965 B8[5100]                            mov ax, cross
+  1095 00000968 50                                  push ax
+  1096 00000969 E81CFB                              call drawobj
+  1097                                              ; collecting object (player) just above the ground
+  1098 0000096C B81400                              mov ax, 20
+  1099 0000096F 50                                  push ax
+  1100 00000970 B82600                              mov ax, 38
+  1101 00000973 50                                  push ax
+  1102 00000974 B8[6300]                            mov ax, basket
+  1103 00000977 50                                  push ax
+  1104 00000978 E80DFB                              call drawobj
+  1105                                  
+  1106                                              ; ---- game timer: count down from 30 to 0 ----
+  1107                                  gameloop:   ; show remaining time (2 digits)
+  1108 0000097B B80000                              mov ax, 0
+  1109 0000097E 50                                  push ax
+  1110 0000097F B84600                              mov ax, 70
+  1111 00000982 50                                  push ax
+  1112 00000983 B81E00                              mov ax, 0x1E
+  1113 00000986 50                                  push ax
+  1114 00000987 FF36[0500]                          push word [timeleft]
+  1115 0000098B B80200                              mov ax, 2
+  1116 0000098E 50                                  push ax
+  1117 0000098F E881FA                              call printnum
+  1118                                              ; show live score (4 digits)
+  1119 00000992 B80000                              mov ax, 0
+  1120 00000995 50                                  push ax
+  1121 00000996 B80900                              mov ax, 9
+  1122 00000999 50                                  push ax
+  1123 0000099A B81E00                              mov ax, 0x1E
+  1124 0000099D 50                                  push ax
+  1125 0000099E FF36[0300]                          push word [score]
+  1126 000009A2 B80400                              mov ax, 4
+  1127 000009A5 50                                  push ax
+  1128 000009A6 E86AFA                              call printnum
+  1129                                              ; wait about one second
+  1130 000009A9 FF36[0700]                          push word [tickdelay]
+  1131 000009AD E8D1FB                              call delay
+  1132 000009B0 813E[0500]0000                      cmp word [timeleft], 0
+  1133 000009B6 7408                                je gameover                 ; time is up
+  1134 000009B8 812E[0500]0100                      sub word [timeleft], 1
+  1135 000009BE EBBB                                jmp gameloop
+  1136                                  
+  1137                                  ; ------------------------------------------------------------
+  1138                                  ; END SCREEN
+  1139                                  ; ------------------------------------------------------------
+  1140 000009C0 E846F9                  gameover:   call clrscr
+  1141 000009C3 E860F9                              call drawborder
+  1142                                  
+  1143                                              ; a bomb above the message
+  1144 000009C6 B80400                              mov ax, 4
+  1145 000009C9 50                                  push ax
+  1146 000009CA B82600                              mov ax, 38
+  1147 000009CD 50                                  push ax
+  1148 000009CE B8[3F00]                            mov ax, bomb
+  1149 000009D1 50                                  push ax
+  1150 000009D2 E8B3FA                              call drawobj
+  1151                                              ; GAME OVER
+  1152 000009D5 B80800                              mov ax, 8
+  1153 000009D8 50                                  push ax
+  1154 000009D9 B81F00                              mov ax, (80 - s_over_len) / 2
+  1155 000009DC 50                                  push ax
+  1156 000009DD B80C00                              mov ax, 0x0C
+  1157 000009E0 50                                  push ax
+  1158 000009E1 B8[8402]                            mov ax, s_over
+  1159 000009E4 50                                  push ax
+  1160 000009E5 E8EDF9                              call printstr
+  1161                                              ; reason
+  1162 000009E8 B80A00                              mov ax, 10
+  1163 000009EB 50                                  push ax
+  1164 000009EC B82000                              mov ax, (80 - s_timeup_len) / 2
+  1165 000009EF 50                                  push ax
+  1166 000009F0 B80E00                              mov ax, 0x0E
+  1167 000009F3 50                                  push ax
+  1168 000009F4 B8[9602]                            mov ax, s_timeup
+  1169 000009F7 50                                  push ax
+  1170 000009F8 E8DAF9                              call printstr
+  1171                                              ; FINAL SCORE: label (col 31) and value (col 44)
+  1172 000009FB B80D00                              mov ax, 13
+  1173 000009FE 50                                  push ax
+  1174 000009FF B81F00                              mov ax, 31
+  1175 00000A02 50                                  push ax
+  1176 00000A03 B80F00                              mov ax, 0x0F
+  1177 00000A06 50                                  push ax
+  1178 00000A07 B8[A602]                            mov ax, s_final
+  1179 00000A0A 50                                  push ax
+  1180 00000A0B E8C7F9                              call printstr
+  1181 00000A0E B80D00                              mov ax, 13
+  1182 00000A11 50                                  push ax
+  1183 00000A12 B82C00                              mov ax, 44
+  1184 00000A15 50                                  push ax
+  1185 00000A16 B80E00                              mov ax, 0x0E
+  1186 00000A19 50                                  push ax
+  1187 00000A1A FF36[0300]                          push word [score]
+  1188 00000A1E B80400                              mov ax, 4
+  1189 00000A21 50                                  push ax
+  1190 00000A22 E8EEF9                              call printnum
+  1191                                              ; exit prompt
+  1192 00000A25 B81100                              mov ax, 17
+  1193 00000A28 50                                  push ax
+  1194 00000A29 B81E00                              mov ax, (80 - s_exit_len) / 2
+  1195 00000A2C 50                                  push ax
+  1196 00000A2D B80A00                              mov ax, 0x0A
+  1197 00000A30 50                                  push ax
+  1198 00000A31 B8[B302]                            mov ax, s_exit
+  1199 00000A34 50                                  push ax
+  1200 00000A35 E89DF9                              call printstr
+  1201                                  
+  1202 00000A38 E85FFB                              call waitenter
+  1203 00000A3B E8CBF8                              call clrscr
+  1204                                  
+  1205 00000A3E B8004C                              mov ax, 0x4c00              ; terminate program
+  1206 00000A41 CD21                                int 0x21
